@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Successfully Authorized</title>
+
+</head>
+<body>
+    <h1>Successfully Authorized</h1>
+    <script>
+        console.log(window.location.href);
+        const newHref = window.location.href.replace("#","");
+        console.log('new href: ', newHref);
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", newHref);
+        xhr.send();
+    </script>
+</body>
+</html>
