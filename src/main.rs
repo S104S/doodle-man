@@ -80,8 +80,8 @@ println!("OS being used: {}", env::consts::OS);
 
             if token != "No access token" {
                 let twitch_service_authorize_uri = "https://id.twitch.tv/oauth2/token";
-                let twitch_ssl_host: String = "irc-ws.chat.twitch.tv".to_string();
-                let ssl_port = 80;
+                let twitch_ssl_host: String = "irc.chat.twitch.tv".to_string();
+                let ssl_port = 6667;
                 let mut token_message = auth::TokenMessage{
                     access_token: "".to_string(),
                     refresh_token: "".to_string(),
