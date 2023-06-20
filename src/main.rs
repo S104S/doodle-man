@@ -9,7 +9,7 @@ use std::env;
 use std::str;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::{Command, Stdio};
 
 fn handle_connection(mut stream: TcpStream) -> String {
@@ -75,20 +75,25 @@ println!("OS being used: {}", env::consts::OS);
 
         // web_server.set_nonblocking(true).expect("Error setting web server to non-blocking.");
         for stream in web_server.incoming() {
-            println!("Received something...");
+            // println!("Received something...");
             let token = handle_connection(stream.unwrap());
 
             if token != "No access token" {
                 let twitch_service_authorize_uri = "https://id.twitch.tv/oauth2/token";
-                let twitch_ssl_host: String = "irc.chat.twitch.tv".to_string();
-                let ssl_port = 6667;
+                let twitch_ssl_host_addrs = [
+                    SocketAddr::from(([34,211,20, 86], 443)),
+                    SocketAddr::from(([54,187,159,249], 80)),
+                    SocketAddr::from(([34,212,92,60], 6697)),
+
+                ];
+                let ssl_port = 443;
                 let mut token_message = auth::TokenMessage{
                     access_token: "".to_string(),
                     refresh_token: "".to_string(),
                     expires_in: 0,
                     token_type: "".to_string(),
                 };
-                println!("Token received: {}", token);
+                // println!("Token received: {}", token);
                 if !codes_used.iter().any(|r| r == &token) {
                     codes_used.push(token.clone());
 
@@ -121,7 +126,7 @@ println!("OS being used: {}", env::consts::OS);
 
                     let twitch_tcp_conn_info = auth::TwitchTcpConnection{
                         access_token: token_message.access_token,
-                        host: twitch_ssl_host,
+                        host: twitch_ssl_host_addrs,
                         port: ssl_port,
                     };
 

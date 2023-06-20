@@ -8,8 +8,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::format;
-use std::io;
-use std::io::{BufRead, BufWriter, Read, Write};
+use std::{io, thread};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::time::Duration;
 use std::net::*;
 use std::net::SocketAddr;
@@ -17,11 +17,12 @@ use std::net::TcpListener;
 use std::net::TcpStream;
 use std::net::IpAddr;
 use std::net::UdpSocket;
+use std::sync::{Arc, Mutex};
 use rand;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::Rng;
 use reqwest::Client;
-use reqwest::header::{CONTENT_TYPE, CONTENT_LENGTH, HeaderValue, HeaderMap};
+use reqwest::header::{CONTENT_TYPE, CONTENT_LENGTH, HeaderValue, HeaderMap, AUTHORIZATION};
 
 pub struct Auth {
    pub key: String
@@ -46,7 +47,7 @@ pub struct TwitchAuthInfo {
 
 pub struct TwitchTcpConnection {
     pub access_token: String,
-    pub host: String,
+    pub host: [SocketAddr; 3],
     pub port: i16,
 }
 
@@ -95,69 +96,105 @@ impl Auth {
         println!("Auth resp: {:?}", text_resp.to_string());
 
         let oauth_token_message: TokenMessage = serde_json::from_str(&text_resp).unwrap();
+
+        let access_token_to_validate = format!("OAuth {}", &oauth_token_message.access_token);
+        println!("Access token to valide: {}", access_token_to_validate);
+        let mut validation_headers = HeaderMap::new();
+        validation_headers.insert(AUTHORIZATION, HeaderValue::from_str(access_token_to_validate.as_str()).unwrap());
+
+        let token_validation_resp =
+            client.get("https://id.twitch.tv/oauth2/validate".to_string())
+                    .headers(validation_headers)
+                    .send();
+
+        println!("TVR: {:?}", token_validation_resp.unwrap().text());
+        // match token_validation_resp {
+        //     Ok(r) => {
+        //         println!("Validation Resp: {:?}", r.text());
+        //     },
+        //     Err(e) => {
+        //         return Err("Error validating token")
+        //     }
+        // }
+
         Ok(oauth_token_message)
     }
 
-    pub fn twitch_tcp_conn(twitch_tcp_conn_info: TwitchTcpConnection) -> Result<(), std::io::Error> {
+    pub async fn twitch_tcp_conn(twitch_tcp_conn_info: TwitchTcpConnection) {
         println!("Inside twitch_tcp_conn....");
+        println!("twitch tcp conn: {}", twitch_tcp_conn_info.access_token);
         let token = twitch_tcp_conn_info.access_token;
         let host = twitch_tcp_conn_info.host;
         let port = twitch_tcp_conn_info.port;
-        let final_uri = format!("{}:{}", host, port);
+        // let final_uri = format!("{}:{}", host, port);
 
-        println!("Final Socket URI: {}", final_uri);
+        // println!("Final Socket URI: {}", final_uri);
+
+        let mut streamer = TcpStream::connect(&twitch_tcp_conn_info.host[0]).await.unwrap();
 
         // connecting to Twitch with a TcpStream
-        let twitch_stream = match TcpStream::connect(final_uri){
-            Ok(stream) => stream,
-            Err(E) => {
-                println!("Error connecting to Socket Server: {}\r\n", E);
-                 return Err(E);
-            }
-        };
+        if let Ok(twitch_stream) = TcpStream::connect(&twitch_tcp_conn_info.host[..]) {
             println!("Connected...");
 
-        let mut reader = io::BufReader::new(twitch_stream.try_clone().expect("Failed to clone TCP stream"));
-        let mut writer = io::BufWriter::new(twitch_stream);
+            let host_ip = &twitch_stream.peer_addr().unwrap().ip();
+            let host_port = &twitch_stream.peer_addr().unwrap().port();
 
-        let mut final_writer = Self::send_http_socket_headers(&mut writer, host);
-        println!("Socket headers len: {}", final_writer.buffer().len());
-        final_writer.flush().expect("Error flushing headers");
+            let mut reader = Arc::new(
+                Mutex::new(
+                    io::BufReader::new(
+                        twitch_stream.try_clone().expect("Failed to clone TCP stream"))));
+            let mut writer = io::BufWriter::new(twitch_stream);
 
-        let tcp_auth_cap_req = "CAP REQ :twitch.tv/membership twitch.tv/tags twitch.tv/commands".to_string();
-        let tcp_auth_pass = format!("PASS oauth:{}", token);
-        let tcp_auth_nickname = "NICK broncosownersbox".to_string();
-        let tcp_auth_username = "USER broncosownersbox".to_string();
-        let tcp_auth_channel = "JOIN #pitcherlist".to_string();
+            thread::spawn(move || {
+                Self::handle_incoming_messages(reader);
+            });
 
-        println!("Twitch Token: {}", tcp_auth_pass);
+            let final_host_uri = format!("{}:{}", host_ip, host_port);
+            println!("final host uri: {}", final_host_uri);
+            // let mut final_writer= writer;
+            let mut final_writer = Self::send_http_socket_headers(&mut writer,final_host_uri);
+            println!("Socket headers len: {}", final_writer.buffer().len());
+            // final_writer.flush().expect("Error flushing headers");
 
-        Self::send_socket_message(&mut final_writer, tcp_auth_cap_req);
-        Self::send_socket_message(&mut final_writer, tcp_auth_pass);
-        Self::send_socket_message(&mut final_writer, tcp_auth_nickname);
-        Self::send_socket_message(&mut final_writer, tcp_auth_channel);
-        // let mut upgrade_connection_writer = Self::send_http_socket_headers(writer, host);
-        // upgrade_connection_writer.flush().expect("Error flushing upgrade headers");
+            let twitch_username = "broncosownersbox".to_string();
+            let channel = "pitcherlist".to_string();
 
-            loop {
-                // println!("Inside loop...");
-                let mut twitch_message: String = "".to_string();
-                let result = reader.read_line(&mut twitch_message);
+            let tcp_auth_cap_req = "CAP REQ :twitch.tv/membership twitch.tv/tags twitch.tv/commands".to_string();
+            let tcp_auth_pass = format!("PASS oauth:{}", token);
+            let tcp_auth_nickname = format!("NICK {}", twitch_username);
+            let tcp_auth_username = format!("USER {}", twitch_username);
+            let tcp_auth_channel = format!("JOIN #{}", channel);
 
-                match result {
-                    Ok(n) => {
-                        if n > 0 {
-                            println!("Bytes received: {}", n);
-                            println!("Message: {}", twitch_message);
-                        }
-                    },
-                    Err(E) => println!("Didn't receive anything yet .... {}", E)
-                }
-            }
-        // } else {
-        //     println!("Not connected to socket server...");
-        // }
-        Ok(())
+            // println!("Twitch Token: {}", tcp_auth_pass);
+
+            // Self::send_socket_message(&mut final_writer, tcp_auth_cap_req);
+            Self::send_socket_message(&mut final_writer, tcp_auth_pass);
+            Self::send_socket_message(&mut final_writer, tcp_auth_nickname);
+            // Self::send_socket_message(&mut final_writer, tcp_auth_username);
+            // Self::send_socket_message(&mut final_writer, tcp_auth_channel);
+            // Ok(())
+        } else {
+            println!("Error connecting to socket server...");
+        }
+
+    }
+
+    fn create_headers(host: String, websocket_key: String) -> Vec<String> {
+        let mut headers: Vec<String> = Vec::new();
+        let hard_coded_host = "irc-ws.chat.twitch.tv".to_string();
+        headers.push(String::from("GET / HTTP/1.1"));
+        // headers.push(String::from("Accept-Encoding:gzip, deflate, br"));
+        // headers.push(String::from("Accept-Language:en-US,en;q=0.9"));
+        // headers.push(String::from("Cache-Control:no-cache"));
+        headers.push(String::from("Connection:Upgrade"));
+        headers.push(String::from("Upgrade:websocket"));
+        // headers.push(format!("Host:{}", host));
+        headers.push(format!("Host:{}", hard_coded_host));
+        headers.push(String::from("Origin:https://www.twitch.tv"));
+        headers.push(String::from("Sec-WebSocket-Protocol:irc"));
+        headers.push(String::from("Sec-WebSocket-Version:13"));
+        headers.push(format!("Sec-WebSocket-Key:{}", websocket_key));
+        headers
     }
 
     fn send_http_socket_headers(writer: &mut BufWriter<TcpStream>, host: String) -> &mut BufWriter<TcpStream> {
@@ -171,71 +208,41 @@ impl Auth {
         println!("b64 key: {}", buf);
         let final_b64 = format!("{}", buf);
         println!("final b64: {}", final_b64);
-        writeln!(writer, "GET / HTTP/1.1").expect("GET: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        writeln!(writer, "Accept-Encoding: gzip, deflate, br").expect("Accept-Encoding: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        writeln!(writer, "Accept-Language: en-US,en;q=0.9").expect("Accept-Language: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        writeln!(writer, "Cache-Control: no-cache").expect("Cache: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        writeln!(writer, "Host: {}", host).expect("Host: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        writeln!(writer, "Connection: Upgrade").expect("Connection: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        writeln!(writer, "Upgrade: WebSocket").expect("Upgrade: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        writeln!(writer, "Origin: https://www.twitch.tv").expect("Upgrade: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        writeln!(writer, "Sec-WebSocket-Protocol: irc").expect("Sec-WebSocket-Protocol: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        writeln!(writer, "Sec-WebSocket-Version: 13").expect("Sec-WebSocket-Version: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        writeln!(writer, "Sec-WebSocket-Key: {}", final_b64).expect("Sec-WebSocket-Key: Error writing to writer");
-        writer.flush().expect("Error flushing headers");
-        // writer.flush().expect("Error flushing headers");
-        // Flushing headers to the stream buffer
+        let headers = Self::create_headers(host, final_b64);
+
+        for header in headers.iter() {
+            // println!("Writing header: {}", header);
+            let error_msg = format!("Error writing header: {}", header);
+            write!(writer, "{}\r\n", header).expect(error_msg.as_str());
+            writer.flush().expect("Error flushing headers");
+        }
         writer
     }
 
-    fn auth_with_socket_server(writer: BufWriter<TcpStream>, host: String, with_headers: bool) {
-        // let mut final_writer = writer;
+    fn handle_incoming_messages(mut stream: Arc<Mutex<BufReader<TcpStream>>>) {
+        loop {
+            // println!("Inside loop...");
+            let mut twitch_message: String = String::new();
+            let mut tcp_stream = stream.lock().unwrap();
+            let result = tcp_stream.read_to_string(&mut twitch_message);
 
-
-
-        if with_headers == true {
-
+            // println!("Twitch message: {}", twitch_message);
+            match result {
+                Ok(n) => {
+                    if n > 0 {
+                        println!("Bytes received: {}", n);
+                        println!("Message: {}", twitch_message);
+                    }
+                },
+                Err(e) => println!("Didn't receive anything yet .... {}", e)
+            }
         }
-
-
-
-        // writeln!(final_writer, "GET / HTTP/1.1").expect("GET: Error writing to writer");
-        // writeln!(final_writer, "Accept-Encoding: gzip, deflate, br").expect("Accept-Encoding: Error writing to writer");
-        // writeln!(final_writer, "Accept-Language: en-US,en;q=0.9").expect("Accept-Language: Error writing to writer");
-        // writeln!(final_writer, "Cache-Control: no-cache").expect("Cache: Error writing to writer");
-        // // writeln!(final_writer, "Host: {}", &host).expect("Host: Error writing to writer");
-        // writeln!(final_writer, "Connection: Upgrade").expect("Connection: Error writing to writer");
-        // writeln!(final_writer, "Upgrade: WebSocket").expect("Upgrade: Error writing to writer");
-        // writeln!(final_writer, "Origin: https://www.twitch.tv").expect("Upgrade: Error writing to writer");
-        // writeln!(final_writer, "{}", tcp_auth_cap_req).unwrap();
-        // // writer.flush().expect("Error flushing stream writer");
-        // writeln!(final_writer,  "{}",tcp_auth_pass).unwrap();
-        // // writer.flush().expect("Error flushing stream writer");
-        // writeln!(final_writer,  "{}",tcp_auth_username).unwrap();
-        // writeln!(final_writer,  "{}",tcp_auth_nickname).unwrap();
-        // println!("Second buffer len: {}", final_writer.buffer().len());
-        // final_writer.flush().expect("Error flushing stream writer");
-        //
-        // writeln!(final_writer,  "{}",tcp_auth_channel).unwrap();
-        // println!("Third buffer len: {}", final_writer.buffer().len());
-        // final_writer.flush().expect("Error flushing stream writer");
-        //
-        // println!("writer flushed");
     }
 
     fn send_socket_message(writer: &mut BufWriter<TcpStream>, msg: String) {
         let mut final_writer = writer;
         writeln!(final_writer, "{}", msg).unwrap();
+        println!("final writer len: {}", final_writer.buffer().len());
         final_writer.flush().expect("Error flushing stream writer");
 
         println!("{} written and flushed.", msg);
