@@ -1,3 +1,5 @@
+#![feature(addr_parse_ascii)]
+
 use std::{io, thread};
 
 mod auth;
@@ -81,8 +83,9 @@ println!("OS being used: {}", env::consts::OS);
             if token != "No access token" {
                 let twitch_service_authorize_uri = "https://id.twitch.tv/oauth2/token";
                 let twitch_ssl_host_addrs = [
-                    SocketAddr::from(([34,211,20, 86], 443)),
+                    SocketAddr::from(([34,212,92,60], 6667)),
                     SocketAddr::from(([54,187,159,249], 80)),
+                    SocketAddr::from(([34,211,20, 86], 443)),
                     SocketAddr::from(([34,212,92,60], 6697)),
 
                 ];
@@ -131,7 +134,7 @@ println!("OS being used: {}", env::consts::OS);
                     };
 
                     println!("About to call twitch_tcp_conn....");
-                    let _ = auth::Auth::twitch_tcp_conn(twitch_tcp_conn_info);
+                    auth::Auth::twitch_tcp_conn(twitch_tcp_conn_info);
                 }
                 // let mut stream_buf = String::new();
                 // let mut tcp_stream = stream.unwrap();
