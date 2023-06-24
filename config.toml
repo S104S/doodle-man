@@ -1,2 +1,13 @@
-[twitch]
-uri='https://id.twitch.tv/oauth2/token'
+[twitch_config]
+user_auth_uri='https://id.twitch.tv/oauth2/authorize'
+oauth_uri='https://id.twitch.tv/oauth2/token'
+socket_server="irc-ws.chat.twitch.tv:80"
+secret='ziocnlyb84z38qp73jeq855k06cdaw'
+grant_type='authorization_code'
+client_id='6pudbm618q548pmpyea9aqkc4lsgj1'
+response_type='code'
+redirect_uri='http://localhost:8080'
+[twitch_channel_info]
+channel='espn975'
+username='broncosownersbox'
+chat_bot_name='doodleman'
